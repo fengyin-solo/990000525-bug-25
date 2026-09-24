@@ -121,24 +121,34 @@ export const useBoardStore = defineStore('board', () => {
   }
 
   async function moveCard(cardId, targetColumnId, position) {
-    const res = await cardApi.move(cardId, targetColumnId, position)
-    // Remove card from old column and add to new column
-    let movedCard = null
+    // Find the source column before the move so we can re-fetch every
+    // affected column afterwards. Never patch a moved card by hand: the
+    // server response is the source of truth, otherwise stale fields such as
+    // column_id/due_date (and derived overdue state) linger after the move.
+    let sourceColumnId = null
     for (const colId in cards.value) {
-      const idx = cards.value[colId].findIndex(c => c.id === cardId)
-      if (idx !== -1) {
-        movedCard = cards.value[colId].splice(idx, 1)[0]
+      if (cards.value[colId].some(c => c.id === cardId)) {
+        sourceColumnId = Number(colId)
         break
       }
     }
-    if (movedCard) {
-      movedCard.column_id = targetColumnId
-      movedCard.position = position
-      if (!cards.value[targetColumnId]) cards.value[targetColumnId] = []
-      // Insert at position
-      cards.value[targetColumnId].splice(position, 0, movedCard)
+
+    try {
+      await cardApi.move(cardId, targetColumnId, position)
+
+      const columnsToRefresh = new Set(
+        [sourceColumnId, targetColumnId].filter(id => id !== null && cards.value[id] !== undefined)
+      )
+      await Promise.all([...columnsToRefresh].map(colId => fetchCards(colId)))
+    } catch (err) {
+      // Roll back any optimistic drag to what the server actually has.
+      await Promise.all(
+        [sourceColumnId, targetColumnId]
+          .filter((id, i, arr) => id !== null && arr.indexOf(id) === i && cards.value[id] !== undefined)
+          .map(colId => fetchCards(colId))
+      )
+      throw err
     }
-    return res.data
   }
 
   function clearBoard() {

@@ -25,9 +25,9 @@
       </el-dropdown>
     </div>
 
-    <div class="column-cards">
+    <div class="column-cards" :data-column-id="column.id">
       <draggable
-        :model-value="cards"
+        v-model="localCards"
         item-key="id"
         group="cards"
         ghost-class="card-ghost"
@@ -40,7 +40,7 @@
             :all-columns="allColumns"
             @edit="$emit('edit-card', card)"
             @delete="$emit('delete-card', card)"
-            @move="(targetColId) => $emit('move-card', card.id, targetColId, 0)"
+            @move="(targetColId) => $emit('move-card', { cardId: card.id, targetColumnId: targetColId, position: 0 })"
           />
         </template>
       </draggable>
@@ -55,11 +55,10 @@
 </template>
 
 <script setup>
-import { ref, nextTick } from 'vue'
+import { ref, computed, nextTick } from 'vue'
 import { MoreFilled, Plus } from '@element-plus/icons-vue'
 import draggable from 'vuedraggable'
 import TaskCard from './TaskCard.vue'
-import { cardApi } from '../api/index.js'
 
 const props = defineProps({
   column: { type: Object, required: true },
@@ -67,7 +66,14 @@ const props = defineProps({
   allColumns: { type: Array, default: () => [] }
 })
 
-const emit = defineEmits(['add-card', 'edit-card', 'delete-card', 'move-card', 'rename-column', 'delete-column'])
+const emit = defineEmits(['update:cards', 'add-card', 'edit-card', 'delete-card', 'move-card', 'rename-column', 'delete-column'])
+
+// Let vuedraggable write its optimistic reorder straight back into the prop
+// array; the store then reconciles with the server in onCardDragEnd.
+const localCards = computed({
+  get: () => props.cards,
+  set: (list) => emit('update:cards', list)
+})
 
 const isEditing = ref(false)
 const editName = ref('')
@@ -96,26 +102,25 @@ function handleCommand(command) {
   }
 }
 
-async function onCardDragEnd(evt) {
+function columnIdFromEl(el) {
+  const wrapper = el?.closest?.('.column-cards')
+  const id = wrapper?.dataset?.columnId
+  return id === undefined ? null : Number(id)
+}
+
+function onCardDragEnd(evt) {
   const cardId = evt.item?.__draggable_context?.element?.id
-  const toColumnId = props.column.id
-  
-  // Find source column
-  const fromContext = evt.from.__draggable_context
-  const toContext = evt.to.__draggable_context
-  
-  if (!cardId) return
-  
+  if (cardId == null) return
+
+  const toColumnId = columnIdFromEl(evt.to)
+  if (toColumnId == null) return
+
   const newIndex = evt.newIndex
-  
-  // If moved to a different column, update via API
-  if (evt.from !== evt.to) {
-    try {
-      await cardApi.move(cardId, toColumnId, newIndex)
-    } catch (err) {
-      // Refresh would be needed here, but the store handles it
-    }
-  }
+
+  // Persist through the store (not the raw API) so local state is always
+  // reconciled with the server response; on failure the store re-fetches and
+  // the optimistic drag is rolled back.
+  emit('move-card', { cardId, targetColumnId: toColumnId, position: newIndex })
 }
 </script>
 

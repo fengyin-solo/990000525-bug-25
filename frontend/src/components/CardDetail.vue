@@ -34,6 +34,7 @@
             value-format="YYYY-MM-DD"
             style="width: 100%;"
           />
+          <div v-if="dueDateError" class="field-error">{{ dueDateError }}</div>
         </el-form-item>
       </div>
 
@@ -57,10 +58,20 @@
   </el-dialog>
 </template>
 
+<style scoped>
+.field-error {
+  color: #f56c6c;
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: 4px;
+}
+</style>
+
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useBoardStore } from '../stores/board.js'
+import { isValidDueDate } from '../utils/date.js'
 
 const props = defineProps({
   visible: Boolean,
@@ -82,6 +93,19 @@ const form = ref({
   due_date: ''
 })
 
+const dueDateError = ref('')
+
+// Only a cleared ('') or valid 'YYYY-MM-DD' value may be submitted.
+const dueDateReadyToSave = computed(() =>
+  form.value.due_date === '' || isValidDueDate(form.value.due_date)
+)
+
+watch(() => form.value.due_date, () => {
+  dueDateError.value = dueDateReadyToSave.value
+    ? ''
+    : 'Please enter a valid date (YYYY-MM-DD) or clear the field'
+})
+
 const rules = {
   title: [{ required: true, message: 'Title is required', trigger: 'blur' }]
 }
@@ -95,6 +119,7 @@ function initForm() {
       due_date: props.card.due_date || ''
     }
     moveTarget.value = null
+    dueDateError.value = ''
   }
 }
 
@@ -102,6 +127,13 @@ async function handleSave() {
   if (!formRef.value) return
   const valid = await formRef.value.validate().catch(() => false)
   if (!valid) return
+
+  // An invalid/half-finished date never gets written: keep the stored value
+  // and ask the user to fix it instead of saving null or a partial string.
+  if (!dueDateReadyToSave.value) {
+    dueDateError.value = 'Please enter a valid date (YYYY-MM-DD) or clear the field'
+    return
+  }
 
   saving.value = true
   try {
@@ -114,15 +146,15 @@ async function handleSave() {
     emit('updated', updated)
     ElMessage.success('Card updated')
 
-    // Handle move if target column selected
+    // Handle move if target column selected. The parent persists it through
+    // the store and reconciles local state with the server response.
     if (moveTarget.value && moveTarget.value !== props.card.column_id) {
-      await boardStore.moveCard(props.card.id, moveTarget.value, 0)
-      ElMessage.success('Card moved')
+      emit('move', { cardId: props.card.id, targetColumnId: moveTarget.value, position: 0 })
     }
 
     emit('update:visible', false)
   } catch (err) {
-    ElMessage.error('Failed to update card')
+    ElMessage.error(err.response?.data?.error || 'Failed to update card')
   } finally {
     saving.value = false
   }

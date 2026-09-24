@@ -28,8 +28,8 @@
       >
         <template #item="{ element: column }">
           <Column
+            v-model:cards="boardStore.cards[column.id]"
             :column="column"
-            :cards="boardStore.cards[column.id] || []"
             :all-columns="boardStore.columns"
             @add-card="handleAddCard"
             @edit-card="openCardDetail"
@@ -149,8 +149,22 @@ function openCardDetail(card) {
   showCardDetail.value = true
 }
 
+// Keep the open detail dialog in sync with the card held by the store, so its
+// fields/markers never diverge from the board list.
+function syncSelectedCard(cardId) {
+  if (selectedCard.value && selectedCard.value.id === cardId) {
+    for (const colId in boardStore.cards) {
+      const found = boardStore.cards[colId].find(c => c.id === cardId)
+      if (found) {
+        selectedCard.value = { ...found }
+        return
+      }
+    }
+  }
+}
+
 function onCardUpdated(updatedCard) {
-  selectedCard.value = { ...updatedCard }
+  syncSelectedCard(updatedCard.id)
 }
 
 async function confirmDeleteCard(card) {
@@ -167,10 +181,20 @@ async function confirmDeleteCard(card) {
   }
 }
 
-async function handleMoveCard(cardId, targetColumnId, position) {
+// Accepts either { cardId, targetColumnId, position } (drag/drop + detail) or
+// the legacy positional (cardId, targetColumnId, position) call.
+async function handleMoveCard(payloadOrCardId, legacyColumnId, legacyPosition) {
+  const move = payloadOrCardId && typeof payloadOrCardId === 'object'
+    ? {
+        cardId: payloadOrCardId.cardId,
+        targetColumnId: payloadOrCardId.targetColumnId,
+        position: payloadOrCardId.position ?? 0
+      }
+    : { cardId: payloadOrCardId, targetColumnId: legacyColumnId, position: legacyPosition ?? 0 }
+
   try {
-    await boardStore.moveCard(cardId, targetColumnId, position)
-    ElMessage.success('Card moved')
+    await boardStore.moveCard(move.cardId, move.targetColumnId, move.position)
+    syncSelectedCard(move.cardId)
   } catch (err) {
     ElMessage.error('Failed to move card')
   }

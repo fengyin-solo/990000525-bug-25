@@ -25,9 +25,9 @@
 
       <p v-if="card.description" class="task-desc">{{ card.description }}</p>
 
-      <div v-if="card.due_date" class="task-due">
+      <div v-if="hasDueDate(card)" class="task-due">
         <el-icon><Calendar /></el-icon>
-        <span :class="{ overdue: isOverdue }">{{ formatDate(card.due_date) }}</span>
+        <span :class="{ overdue: isOverdue }">{{ formatDueDate(card.due_date) }}</span>
       </div>
     </div>
 
@@ -52,6 +52,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { MoreFilled, Calendar } from '@element-plus/icons-vue'
+import { hasDueDate, isCardOverdue, formatDueDate } from '../utils/date.js'
 
 const props = defineProps({
   card: { type: Object, required: true },
@@ -72,20 +73,11 @@ const priorityType = computed(() => {
   }
 })
 
-const isOverdue = computed(() => {
-  if (!props.card.due_date) return false
-  return new Date(props.card.due_date) < new Date()
-})
+const isOverdue = computed(() => isCardOverdue(props.card))
 
 const otherColumns = computed(() => {
   return props.allColumns.filter(c => c.id !== props.card.column_id)
 })
-
-function formatDate(dateStr) {
-  if (!dateStr) return ''
-  const d = new Date(dateStr)
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-}
 
 function handleCommand(command) {
   if (command === 'edit') {

@@ -1,10 +1,35 @@
 const express = require('express');
 const { getDb } = require('../db/init');
 const { authMiddleware } = require('../middleware/auth');
+const { normalizeDueDate, normalizePriority } = require('../utils/validation');
 
 const router = express.Router();
 
 router.use(authMiddleware);
+
+function parseCardFields(body, { partial = false } = {}) {
+  const fields = {};
+
+  if (!partial || body.title !== undefined) {
+    const title = (body.title || '').toString().trim();
+    if (!title) throw new Error('Card title is required');
+    fields.title = title;
+  }
+
+  if (!partial || body.description !== undefined) {
+    fields.description = body.description || '';
+  }
+
+  if (!partial || body.priority !== undefined) {
+    fields.priority = normalizePriority(body.priority);
+  }
+
+  if (!partial || body.due_date !== undefined) {
+    fields.due_date = normalizeDueDate(body.due_date);
+  }
+
+  return fields;
+}
 
 // Helper: verify card ownership through column -> board -> user
 function getCardWithOwnership(db, cardId, userId) {
@@ -57,9 +82,11 @@ router.get('/columns/:columnId/cards', (req, res) => {
 
 // POST /api/columns/:columnId/cards - Add card
 router.post('/columns/:columnId/cards', (req, res) => {
-  const { title, description, priority, due_date } = req.body;
-  if (!title || !title.trim()) {
-    return res.status(400).json({ error: 'Card title is required' });
+  let fields;
+  try {
+    fields = parseCardFields(req.body);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
   }
 
   const db = getDb();
@@ -80,14 +107,14 @@ router.post('/columns/:columnId/cards', (req, res) => {
     const newPosition = (maxPos.maxPos ?? -1) + 1;
 
     const result = db.prepare(`
-      INSERT INTO cards (column_id, title, description, priority, due_date, position) 
+      INSERT INTO cards (column_id, title, description, priority, due_date, position)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(
       req.params.columnId,
-      title.trim(),
-      description || '',
-      priority || 'medium',
-      due_date || null,
+      fields.title,
+      fields.description,
+      fields.priority,
+      fields.due_date,
       newPosition
     );
 
@@ -102,7 +129,6 @@ router.post('/columns/:columnId/cards', (req, res) => {
 
 // PUT /api/cards/:id - Update card
 router.put('/cards/:id', (req, res) => {
-  const { title, description, priority, due_date } = req.body;
   const db = getDb();
 
   try {
@@ -112,13 +138,21 @@ router.put('/cards/:id', (req, res) => {
       return res.status(404).json({ error: 'Card not found' });
     }
 
+    let fields;
+    try {
+      fields = parseCardFields(req.body, { partial: true });
+    } catch (err) {
+      db.close();
+      return res.status(400).json({ error: err.message });
+    }
+
     const updates = [];
     const params = [];
 
-    if (title !== undefined) { updates.push('title = ?'); params.push(title.trim()); }
-    if (description !== undefined) { updates.push('description = ?'); params.push(description); }
-    if (priority !== undefined) { updates.push('priority = ?'); params.push(priority); }
-    if (due_date !== undefined) { updates.push('due_date = ?'); params.push(due_date || null); }
+    if (fields.title !== undefined) { updates.push('title = ?'); params.push(fields.title); }
+    if (fields.description !== undefined) { updates.push('description = ?'); params.push(fields.description); }
+    if (fields.priority !== undefined) { updates.push('priority = ?'); params.push(fields.priority); }
+    if (fields.due_date !== undefined) { updates.push('due_date = ?'); params.push(fields.due_date); }
 
     updates.push("updated_at = datetime('now')");
 
@@ -196,23 +230,35 @@ router.put('/cards/:id/move', (req, res) => {
     const maxPos = db.prepare('SELECT MAX(position) AS maxPos FROM cards WHERE column_id = ?').get(columnId);
     const newPosition = position !== undefined ? Math.min(position, (maxPos.maxPos ?? -1) + 1) : (maxPos.maxPos ?? -1) + 1;
 
-    // Remove card from old position (shift cards down in old column)
-    db.prepare(`
-      UPDATE cards SET position = position - 1 
-      WHERE column_id = ? AND position > ?
-    `).run(oldColumnId, oldPosition);
+    // Build the canonical ordering for both affected columns in memory, then
+    // persist it in one pass. Computing the lists up front (before any UPDATE)
+    // makes same-column reorders and cross-column moves use the same correct
+    // logic instead of shifting positions twice.
+    let sourceIds = [];
+    if (oldColumnId !== columnId) {
+      sourceIds = db.prepare(
+        'SELECT id FROM cards WHERE column_id = ? AND id != ? ORDER BY position ASC, id ASC'
+      ).all(oldColumnId, req.params.id).map(r => r.id);
+    }
 
-    // Make room in target column (shift cards up in target column)
-    db.prepare(`
-      UPDATE cards SET position = position + 1 
-      WHERE column_id = ? AND position >= ?
-    `).run(columnId, newPosition);
+    const targetIds = db.prepare(
+      'SELECT id FROM cards WHERE column_id = ? ORDER BY position ASC, id ASC'
+    ).all(columnId).map(r => r.id).filter(id => id !== Number(req.params.id));
 
-    // Move the card
-    db.prepare(`
-      UPDATE cards SET column_id = ?, position = ?, updated_at = datetime('now') 
-      WHERE id = ?
-    `).run(columnId, newPosition, req.params.id);
+    const insertAt = Math.max(0, Math.min(newPosition, targetIds.length));
+    targetIds.splice(insertAt, 0, Number(req.params.id));
+
+    const applyOrder = db.transaction((assignments) => {
+      const stmt = db.prepare('UPDATE cards SET column_id = ?, position = ? WHERE id = ?');
+      for (const a of assignments) stmt.run(a.columnId, a.position, a.id);
+      db.prepare("UPDATE cards SET updated_at = datetime('now') WHERE id = ?").run(req.params.id);
+    });
+
+    const assignments = targetIds.map((id, i) => ({ columnId, position: i, id }));
+    if (oldColumnId !== columnId) {
+      sourceIds.forEach((id, i) => assignments.push({ columnId: oldColumnId, position: i, id }));
+    }
+    applyOrder(assignments);
 
     const updated = db.prepare('SELECT * FROM cards WHERE id = ?').get(req.params.id);
     db.close();

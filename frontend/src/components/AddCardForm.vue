@@ -34,6 +34,7 @@
             value-format="YYYY-MM-DD"
             style="width: 100%;"
           />
+          <div v-if="dueDateError" class="field-error">{{ dueDateError }}</div>
         </el-form-item>
       </div>
     </el-form>
@@ -46,9 +47,10 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useBoardStore } from '../stores/board.js'
+import { isValidDueDate } from '../utils/date.js'
 
 const props = defineProps({
   visible: Boolean,
@@ -68,6 +70,18 @@ const form = ref({
   due_date: ''
 })
 
+const dueDateError = ref('')
+
+const dueDateReadyToSave = computed(() =>
+  form.value.due_date === '' || isValidDueDate(form.value.due_date)
+)
+
+watch(() => form.value.due_date, () => {
+  dueDateError.value = dueDateReadyToSave.value
+    ? ''
+    : 'Please enter a valid date (YYYY-MM-DD) or leave it empty'
+})
+
 const rules = {
   title: [{ required: true, message: 'Card title is required', trigger: 'blur' }]
 }
@@ -79,12 +93,19 @@ function resetForm() {
     priority: 'medium',
     due_date: ''
   }
+  dueDateError.value = ''
 }
 
 async function handleAdd() {
   if (!formRef.value) return
   const valid = await formRef.value.validate().catch(() => false)
   if (!valid) return
+
+  // Never submit a half-finished date; only '' (no date) or a real date pass.
+  if (!dueDateReadyToSave.value) {
+    dueDateError.value = 'Please enter a valid date (YYYY-MM-DD) or leave it empty'
+    return
+  }
 
   adding.value = true
   try {
@@ -104,3 +125,12 @@ async function handleAdd() {
   }
 }
 </script>
+
+<style scoped>
+.field-error {
+  color: #f56c6c;
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: 4px;
+}
+</style>
