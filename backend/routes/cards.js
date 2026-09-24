@@ -6,6 +6,20 @@ const router = express.Router();
 
 router.use(authMiddleware);
 
+// due_date is stored as a date-only string ('YYYY-MM-DD'). Anything else is
+// invalid and must never be written — callers keep the previously stored
+// value instead of persisting a half-baked one.
+function isValidDueDate(value) {
+  if (typeof value !== 'string') return false;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!m) return false;
+  const year = Number(m[1]);
+  const month = Number(m[2]);
+  const day = Number(m[3]);
+  const d = new Date(Date.UTC(year, month - 1, day));
+  return d.getUTCFullYear() === year && d.getUTCMonth() === month - 1 && d.getUTCDate() === day;
+}
+
 // Helper: verify card ownership through column -> board -> user
 function getCardWithOwnership(db, cardId, userId) {
   return db.prepare(`
@@ -80,14 +94,14 @@ router.post('/columns/:columnId/cards', (req, res) => {
     const newPosition = (maxPos.maxPos ?? -1) + 1;
 
     const result = db.prepare(`
-      INSERT INTO cards (column_id, title, description, priority, due_date, position) 
+      INSERT INTO cards (column_id, title, description, priority, due_date, position)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(
       req.params.columnId,
       title.trim(),
       description || '',
       priority || 'medium',
-      due_date || null,
+      isValidDueDate(due_date) ? due_date.trim() : null,
       newPosition
     );
 
@@ -118,7 +132,15 @@ router.put('/cards/:id', (req, res) => {
     if (title !== undefined) { updates.push('title = ?'); params.push(title.trim()); }
     if (description !== undefined) { updates.push('description = ?'); params.push(description); }
     if (priority !== undefined) { updates.push('priority = ?'); params.push(priority); }
-    if (due_date !== undefined) { updates.push('due_date = ?'); params.push(due_date || null); }
+    if (due_date !== undefined) {
+      if (due_date === null || due_date === '') {
+        // Explicit clear
+        updates.push('due_date = ?'); params.push(null);
+      } else if (isValidDueDate(due_date)) {
+        updates.push('due_date = ?'); params.push(due_date.trim());
+      }
+      // Invalid date: keep the original value instead of writing a half-baked one.
+    }
 
     updates.push("updated_at = datetime('now')");
 

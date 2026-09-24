@@ -61,6 +61,7 @@
 import { ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useBoardStore } from '../stores/board.js'
+import { isValidDueDate } from '../utils/date.js'
 
 const props = defineProps({
   visible: Boolean,
@@ -92,7 +93,9 @@ function initForm() {
       title: props.card.title || '',
       description: props.card.description || '',
       priority: props.card.priority || 'medium',
-      due_date: props.card.due_date || ''
+      // Only prefill a valid date; anything else shows as empty (same as the
+      // card badge) instead of circulating an unparseable value back on save
+      due_date: isValidDueDate(props.card.due_date) ? props.card.due_date : ''
     }
     moveTarget.value = null
   }

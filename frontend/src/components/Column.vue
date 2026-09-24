@@ -32,7 +32,7 @@
         group="cards"
         ghost-class="card-ghost"
         animation="200"
-        @end="onCardDragEnd"
+        @change="onDragChange"
       >
         <template #item="{ element: card }">
           <TaskCard
@@ -57,9 +57,10 @@
 <script setup>
 import { ref, nextTick } from 'vue'
 import { MoreFilled, Plus } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import draggable from 'vuedraggable'
 import TaskCard from './TaskCard.vue'
-import { cardApi } from '../api/index.js'
+import { useBoardStore } from '../stores/board.js'
 
 const props = defineProps({
   column: { type: Object, required: true },
@@ -68,6 +69,8 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['add-card', 'edit-card', 'delete-card', 'move-card', 'rename-column', 'delete-column'])
+
+const boardStore = useBoardStore()
 
 const isEditing = ref(false)
 const editName = ref('')
@@ -96,25 +99,17 @@ function handleCommand(command) {
   }
 }
 
-async function onCardDragEnd(evt) {
-  const cardId = evt.item?.__draggable_context?.element?.id
-  const toColumnId = props.column.id
-  
-  // Find source column
-  const fromContext = evt.from.__draggable_context
-  const toContext = evt.to.__draggable_context
-  
-  if (!cardId) return
-  
-  const newIndex = evt.newIndex
-  
-  // If moved to a different column, update via API
-  if (evt.from !== evt.to) {
-    try {
-      await cardApi.move(cardId, toColumnId, newIndex)
-    } catch (err) {
-      // Refresh would be needed here, but the store handles it
-    }
+// vuedraggable restores the DOM after a drag, so the store stays the single
+// source of truth. 'added' fires on the target column for cross-column drops,
+// 'moved' fires for same-column reorders — persist both through the store so
+// the board, the server, and the next visit all agree.
+async function onDragChange(evt) {
+  const change = evt.added || evt.moved
+  if (!change) return // 'removed' is covered by the target column's 'added'
+  try {
+    await boardStore.moveCard(change.element.id, props.column.id, change.newIndex)
+  } catch (err) {
+    ElMessage.error('Failed to move card')
   }
 }
 </script>
